@@ -2,4 +2,4 @@
 /pkg/
 /src/*/*
 
-!/src/fractal/notes/
+!/src/fractal/notify/
