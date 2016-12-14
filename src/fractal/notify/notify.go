@@ -3,15 +3,18 @@ package notify
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strconv"
-	"strings"
 )
 
 // Notification is the standard error struct used in notify
 type Notification struct {
 	Code    int
 	Message string
+}
+
+// Error returns the notification text
+func (e Notification) Error() string {
+	return e.Message
 }
 
 // IsCode checks whether the provided error has the error code %code%.
@@ -25,38 +28,6 @@ func IsCode(code int, err error) bool {
 	}
 }
 
-// New builds a Notification struct
-func New(code int, args ...string) error {
-	if code < 1 {
-		syswarn(fmt.Sprintf("An error should have greater than zero code. Changing %d to 1", code))
-		code = 1
-	}
-
-	// Append some runtime information
-	if _, fn, line, ok := runtime.Caller(1); ok {
-		args = append(args, fmt.Sprintf(" -> [%s: %d]", fn, line))
-	}
-
-	return Notification{Code: code, Message: strings.Join(args, " ")}
-}
-
-// Newf  formats according to a format specifier and runs notify.New
-func Newf(code int, format string, a ...interface{}) error {
-	return New(code, fmt.Sprintf(format, a))
-}
-
-// Error returns the notification text
-func (e Notification) Error() string {
-	return e.Message
-}
-
-// Note is a struct used to transport notifications (string, error, notify.Notification)
-// to the note channel.
-type Note struct {
-	Sender string
-	Value  interface{}
-}
-
 // NewNotifier instantiates and returns a new notifier and a (send-only) Notes channel.
 // Other elements of the system can notify the user/write to log by sending (notify.Send) to the noteChan.
 // Accepted endpoints: files.log and os.File implementations (e.g. os.Stdout). Notes will be sent to all
@@ -64,28 +35,29 @@ type Note struct {
 // In order to run the logging service, the looper function must be started.
 // If blocking behaviour is required, then the looping fuction should be started normally (otherwise as a goroutine).
 // Closing the noteChan exits the looper/notifier
-func NewNotifier(service string, instance string, logAll bool, notifierCap int, endpoints ...interface{}) (*notifier, chan<- *Note) {
+func NewNotifier(service string, instance string, logAll bool, notifierCap int, files ...interface{}) *notifier {
 
+	// Initialize bare notifier
 	no := notifier{}
 
 	// Prepare endpoints
-	if len(endpoints) == 0 {
+	if len(files) == 0 {
 		syswarn("No endpoints provided. Going to route all notes to os.Stdout")
-		endpoints = []interface{}{os.Stdout}
+		files = []interface{}{os.Stdout}
 	}
 
-	for i, endpoint := range endpoints {
+	for i, endpoint := range files {
 
 		switch w := endpoint.(type) {
 
 		case string:
 			f, err := openLogFile(w)
 			if err == nil || f == os.Stdout {
-				no.endpointsPtr = append(no.endpointsPtr, f)
+				no.endpoints.endpointsPtr = append(no.endpoints.endpointsPtr, f)
 			}
 
 		case *os.File:
-			no.endpointsPtr = append(no.endpointsPtr, w)
+			no.endpoints.endpointsPtr = append(no.endpoints.endpointsPtr, w)
 
 		default:
 			syswarn(strconv.Itoa(i+1) + "th endpoint is not supported. Either provide a file path (string) or an instance of *os.File")
@@ -94,7 +66,7 @@ func NewNotifier(service string, instance string, logAll bool, notifierCap int, 
 	}
 
 	// Set agent details
-	noteChan := make(chan *Note, notifierCap)
+	noteChan := make(chan *note, notifierCap)
 	no.service = service
 	no.instance = instance
 	no.noteChan = noteChan
@@ -102,43 +74,25 @@ func NewNotifier(service string, instance string, logAll bool, notifierCap int, 
 	no.safetySwitch = false
 	no.notificationCodes = standardCodes
 
-	return &no, noteChan
+	return &no
 }
 
-// Send creates a Note struct and sends it into the noteChan
-func Send(sender string, value interface{}, noteChan chan<- *Note) error {
-
-	go func() {
-		noteChan <- &Note{
-			Sender: sender,
-			Value:  value,
-		}
-	}()
-
-	if err, ok := value.(error); ok {
-		return err
-	} else {
-		return nil
-	}
-}
-
-// PersonalizeSend creates a simplified notify.Send function, which requires
+// Sender creates a simplified notify.send function, which requires
 // only the value of the message to be passed. Each unique sender (e.g. server,
-// client, etc.) should have their own personalized Send, or use the more verbose
-// notify.Send.
-func (no *notifier) PersonalizeSend(sender string) func(interface{}) error {
+// client, etc.) should have their own personalized send.
+func (no *notifier) Sender(sender string) func(interface{}) error {
 	return func(value interface{}) error {
-		return Send(sender, value, no.noteChan)
+		return send(sender, value, no.noteChan, &no.ops)
 	}
 }
 
-// PersonalizeNew creates a simplified notify.Send(notify.New()) function, which requires
+// Failure creates a simplified notify.Send(notify.New()) function, which requires
 // only the value of the error code and message to be passed.
-// Each unique sender (e.g. server, client, etc.) should have their own personalized
-// New, or use the more verbose notify.Send(notify.New())
-func (no *notifier) PersonalizeNew(sender string) func(int, string) error {
+// Each unique sender (e.g. server, client, etc.) should have their own
+// personalized new and/or send.
+func (no *notifier) Failure(sender string) func(int, string) error {
 	return func(code int, message string) error {
-		return Send(sender, New(code, message), no.noteChan)
+		return send(sender, newf(code, message), no.noteChan, &no.ops)
 	}
 }
 
@@ -153,13 +107,13 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) {
 	// Only allow one change of codes per notifier
 	if no.safetySwitch {
 		fmt.Println()
-		no.noteToSelf(New(999, "You are trying to change notification codes again. This action is not permitted."))
+		no.noteToSelf(newf(999, "You are trying to change notification codes again. This action is not permitted."))
 		return
 	}
 
 	for code, notification := range newCodes {
 		if code <= 1 || code >= 999 {
-			no.noteToSelf(Newf(999, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
+			no.noteToSelf(newf(999, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
 			delete(newCodes, code)
 		} else {
 			no.notificationCodes[code] = notification
@@ -170,42 +124,69 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) {
 
 }
 
-// loop logs and displays messages sent to the Note channel
-// Loop is the only consumer of the Note channel as well as the logging facility
-func (no *notifier) Loop() {
+// Run logs and displays messages sent to the Note channel
+// Run is the only consumer of the Note channel as well as the logging facility
+func (no *notifier) Run() {
 
 	// Sanity check
 	no.isOK()
 
-	var note *Note
+	no.endpoints.Lock()
+
+	var n *note
 	var ok bool
 
 	// Receive Notes
+runLoop:
 	for {
 
-		// Receive or quit
+		// Receive or halt notifier operations (send and newf won't work)
 		select {
-		case note, ok = <-no.noteChan:
+		case n, ok = <-no.noteChan:
 			if !ok {
-				no.log(&Note{"notifier", "Note channel has been closed. Exiting notifier loop."})
-				for _, endpoint := range no.endpointsPtr {
-					if endpoint != os.Stdout {
-						endpoint.Close()
-					}
-				}
-				return
+				no.endpoints.Unlock()
+				break runLoop
 			}
 		}
 
-		// Log (and maybe print)
-		switch note.Value.(type) {
+		// Write to endpoints
+		switch (*n.Value).(type) {
 		case string:
 			if no.logAll {
-				no.log(note)
+				no.log(n)
 			}
 		default:
-			no.log(note)
+			no.log(n)
+		}
+
+	}
+}
+
+// Exit closes the note channel and waits a little for the notifier to
+func (no *notifier) Exit() {
+
+	// Notify about exiting. Might block until space in the channel is available
+	var exitMSG interface{} = "Note channel has been closed. Exiting notifier loop."
+	no.noteChan <- &note{"notifier", &exitMSG}
+
+	// Close channel and
+	no.ops.Lock()
+	no.ops.halt = true
+	close(no.noteChan)
+	no.ops.Unlock()
+
+	// wait for the backlog to be written
+	for len(no.noteChan) > 0 {
+		// do nothing
+	}
+
+	// Close endpoints
+	no.endpoints.Lock()
+	for _, endpoint := range no.endpoints.endpointsPtr {
+		if endpoint != os.Stdout {
+			endpoint.Close()
 		}
 	}
+	no.endpoints.Unlock()
 
 }

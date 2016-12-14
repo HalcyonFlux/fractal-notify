@@ -5,19 +5,39 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// note is a struct used to transport notifications (string, error, notify.Notification)
+// to the note channel.
+type note struct {
+	Sender string
+	Value  *interface{}
+}
+
+type endpoints struct {
+	sync.Mutex              // Lock resources for notify.log() or notify.Exit use only
+	endpointsPtr []*os.File // Slice of endpoints the logger should write to
+}
+
+type operations struct {
+	sync.RWMutex      // Lock halt switch
+	halt         bool // Indicator of whether the notifier has been stopped
+}
 
 type notifier struct {
 	service           string            // Service that uses the notifier (e.g. fractal-beacon)
 	instance          string            // Unique instance name of the service (e.g. beacon_server_01)
-	endpointsPtr      []*os.File        // Slice of endpoints the logger should write to
 	logAll            bool              // If true, also logs non-error messages
-	noteChan          chan *Note        // Channel the notifier listens on
+	noteChan          chan *note        // Channel the notifier listens on
 	notificationCodes map[int][2]string // Map of notification codes and their meanings
 	safetySwitch      bool              // Indicator of whether notificationCodes have been changed
+	ops               operations        // Lockable operations indicator
+	endpoints         endpoints         // Lockable slice of resources
 }
 
 // syswarn prints a warning without logging it
@@ -54,18 +74,12 @@ func openLogFile(logfile string) (*os.File, error) {
 // noteToSelf creates a note. This function is used to communicate internal problems.
 // This note will be logged
 func (no *notifier) noteToSelf(value interface{}) {
-	no.noteChan <- &Note{"notifier", value}
+	no.noteChan <- &note{"notifier", &value}
 }
 
 // isOK check is some assumptions made by the notifier are still valid
-// notify.notifier expects some notification codes as well as the notes channel
-// to be available at all times.
+// notify.notifier expects some notification codes to be available at all times.
 func (no *notifier) isOK() {
-
-	// Check cannel
-	if no.noteChan == nil {
-		panic("[notify]: note channel is not available!")
-	}
 
 	// Check codes
 	sysCodes := []int{0, 1, 999}
@@ -73,6 +87,44 @@ func (no *notifier) isOK() {
 		if _, okStd := no.notificationCodes[code]; !okStd {
 			panic(fmt.Sprintf("notify: notificationCodes[%d] is not available", code))
 		}
+	}
+}
+
+// newf formats according to a format specifier and builds a Notification struct
+func newf(code int, format string, a ...interface{}) error {
+
+	args := []string{fmt.Sprintf(format, a)}
+
+	if code < 1 {
+		syswarn(fmt.Sprintf("An error should have greater than zero code. Changing %d to 1", code))
+		code = 1
+	}
+
+	// Append some runtime information
+	if _, fn, line, ok := runtime.Caller(1); ok {
+		args = append(args, fmt.Sprintf(" -> [%s: %d]", filepath.Base(fn), line))
+	}
+
+	return Notification{Code: code, Message: strings.Join(args, " ")}
+}
+
+// send creates a note struct and sends it into the noteChan
+func send(sender string, value interface{}, noteChan chan<- *note, ops *operations) error {
+	ops.RLock()
+	if (*ops).halt != true {
+		go func() {
+			noteChan <- &note{sender, &value}
+		}()
+	} else {
+		syswarn("cannot send notifications: note channel is closed!")
+	}
+	ops.RUnlock()
+
+	switch err := value.(type) {
+	case error:
+		return err
+	default:
+		return nil
 	}
 }
 
@@ -144,7 +196,7 @@ func (l *logEntry) toJson() string {
 //  e.g.:
 // 1481552048\tbeacon\tbeacon_server_01\tcollector]\tMSG\t0\tGeneralMessage\tPushing a new Job into the jobChan
 // 1481552049\tbeacon\tbeacon_server_01\tdispatcher]\tERR\t3\tSystemMalfunction\tCould not dispatch Job
-func (no *notifier) log(note *Note) {
+func (no *notifier) log(n *note) {
 
 	// Sanity check (will panic)
 	no.isOK()
@@ -154,14 +206,15 @@ func (no *notifier) log(note *Note) {
 		Timestamp: int(time.Now().Unix()),
 		Service:   no.service,
 		Instance:  no.instance,
-		Sender:    note.Sender,
+		Sender:    n.Sender,
 	}
 
-	switch msg := note.Value.(type) {
+	switch msg := (*n.Value).(type) {
 
 	case Notification:
+
 		if _, ok := no.notificationCodes[msg.Code]; !ok {
-			no.noteToSelf(Newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.Code))
+			no.noteToSelf(newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.Code))
 			lg.Code = 1
 		} else {
 			lg.Code = msg.Code
@@ -178,7 +231,7 @@ func (no *notifier) log(note *Note) {
 
 	default:
 		lg.Code = 999
-		lg.Message = "Unknown value used in notify.Send"
+		lg.Message = "Unknown value used in notify.send"
 	}
 
 	// Determine level and status
@@ -188,10 +241,9 @@ func (no *notifier) log(note *Note) {
 
 	// Write to all endpoints
 	str := lg.toStr()
-	for i, w := range no.endpointsPtr {
+	for i, w := range no.endpoints.endpointsPtr {
 		if _, werr := w.WriteString(str + "\n"); werr != nil {
-			syswarn("failed writing to " + strconv.Itoa(i) + "th endpoint: " + werr.Error()) // do not log to avoid infinite loop
+			syswarn("failed writing to " + strconv.Itoa(i+1) + "th endpoint: " + werr.Error()) // do not log to avoid infinite loop
 		}
 	}
-
 }
