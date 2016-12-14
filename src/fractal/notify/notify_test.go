@@ -7,11 +7,19 @@ import (
 	"time"
 )
 
+// Readme use case
 func TestNotify(t *testing.T) {
 
+	// Select relevant endpoints
+	endpoints := []interface{}{
+		os.Getenv("HOME") + "/myservice/myservice_main.log",
+		os.Getenv("HOME") + "/myservice/myservice_support.log",
+		os.Stdout,
+	}
+
 	// Instantiate the notifier(s)
-	noMain, noMainChan := NewNotifier("MyService", "MyServiceInstance", os.Getenv("HOME")+"/myservice/myservice_main.log", 1, 100)          // myservice_main.log
-	noSupport, noSupportChan := NewNotifier("MyService", "MyServiceInstance", os.Getenv("HOME")+"/myservice/myservice_support.log", 1, 100) // myservice_support.log
+	noMain, noMainChan := NewNotifier("MyService", "MyServiceInstance", true, 100, endpoints[0])
+	noSupport, noSupportChan := NewNotifier("MyService", "MyServiceInstance", true, 100, endpoints[1], endpoints[2])
 
 	// Run notification service in the background to avoid blocking
 	go noSupport.Loop()
@@ -41,6 +49,10 @@ func TestNotify(t *testing.T) {
 	} else {
 		f.Close()
 	}
+
+	// Use any notifier you want
+	sendToMain := noMain.PersonalizeSend("MyMainThread")   // use main notifier for other tasks too
+	sendToMain("MyMainThread is done checking myfunc.cfg") // Will appear in myservice_main.log
 
 	// Close notifier after 5 seconds
 	go func() {

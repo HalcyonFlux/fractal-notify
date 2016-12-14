@@ -1,8 +1,10 @@
 package notify
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +13,8 @@ import (
 type notifier struct {
 	service           string            // Service that uses the notifier (e.g. fractal-beacon)
 	instance          string            // Unique instance name of the service (e.g. beacon_server_01)
-	logfilePtr        *os.File          // Full path to the log file
-	verbosity         int               // Level of output (0 - only log errors, 1 - log errors and messages, 2 - log and display both)
+	endpointsPtr      []*os.File        // Slice of endpoints the logger should write to
+	logAll            bool              // If true, also logs non-error messages
 	noteChan          chan *Note        // Channel the notifier listens on
 	notificationCodes map[int][2]string // Map of notification codes and their meanings
 	safetySwitch      bool              // Indicator of whether notificationCodes have been changed
@@ -21,6 +23,32 @@ type notifier struct {
 // syswarn prints a warning without logging it
 func syswarn(warn string) {
 	fmt.Println("notify:", warn)
+}
+
+// openLogFile opens a log file and returns a reference to it
+func openLogFile(logfile string) (*os.File, error) {
+
+	// Check validity of file
+	if strings.ToLower(filepath.Ext(logfile)) != ".log" {
+		syswarn("log file's extension is not *.log")
+	}
+	if f, err := os.Stat(logfile); os.IsNotExist(err) {
+		if _, berr := os.Stat(filepath.Dir(logfile)); os.IsNotExist(berr) {
+			if derr := os.MkdirAll(filepath.Dir(logfile), 0700); derr != nil {
+				syswarn("log file directory does not exist. Failed creating it: " + derr.Error())
+			}
+		}
+	} else if err == nil && f.IsDir() {
+		syswarn("the provided log file is a directory. Will not be able to write notifications to file.")
+	}
+
+	// Open the log file
+	if f, err := os.OpenFile(logfile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err != nil {
+		syswarn("Failed opening log file: " + err.Error() + ". Using os.Stdout instead")
+		return os.Stdout, err
+	} else {
+		return f, nil
+	}
 }
 
 // noteToSelf creates a note. This function is used to communicate internal problems.
@@ -49,55 +77,66 @@ func (no *notifier) isOK() {
 }
 
 type logEntry struct {
-	timestamp int
-	service   string
-	instance  string
-	sender    string
-	level     string
-	code      int
-	status    string
-	message   string
+	Timestamp int    `json:"Timestamp"`
+	Service   string `json:"Service"`
+	Instance  string `json:"Instance"`
+	Sender    string `json:"Sender"`
+	Level     string `json:"Level"`
+	Code      int    `json:"Code"`
+	Status    string `json:"Status"`
+	Message   string `json:"Message"`
 }
 
 // correct corrects some possible mistakes in logEntry
 func (l *logEntry) correct() {
 
 	// No empty strings
-	if l.service == "" {
-		l.service = "N/A"
+	if l.Service == "" {
+		l.Service = "N/A"
 	}
-	if l.instance == "" {
-		l.instance = "N/A"
+	if l.Instance == "" {
+		l.Instance = "N/A"
 	}
-	if l.sender == "" {
-		l.sender = "N/A"
+	if l.Sender == "" {
+		l.Sender = "N/A"
 	}
-	if l.level == "" {
-		l.level = "N/A"
+	if l.Level == "" {
+		l.Level = "N/A"
 	}
-	if l.status == "" {
-		l.status = "N/A"
+	if l.Status == "" {
+		l.Status = "N/A"
 	}
-	if l.message == "" {
-		l.message = "N/A"
+	if l.Message == "" {
+		l.Message = "N/A"
 	}
 
 	// No tabs, newlines and so on.
 	for _, symbol := range []string{"\t", "\n", "\r", "\b", "\f", "\v"} {
-		l.service = strings.Replace(l.service, symbol, " ", -1)
-		l.instance = strings.Replace(l.instance, symbol, " ", -1)
-		l.sender = strings.Replace(l.sender, symbol, " ", -1)
-		l.level = strings.Replace(l.level, symbol, " ", -1)
-		l.status = strings.Replace(l.status, symbol, " ", -1)
-		l.message = strings.Replace(l.message, symbol, " ", -1)
+		l.Service = strings.Replace(l.Service, symbol, " ", -1)
+		l.Instance = strings.Replace(l.Instance, symbol, " ", -1)
+		l.Sender = strings.Replace(l.Sender, symbol, " ", -1)
+		l.Level = strings.Replace(l.Level, symbol, " ", -1)
+		l.Status = strings.Replace(l.Status, symbol, " ", -1)
+		l.Message = strings.Replace(l.Message, symbol, " ", -1)
 	}
 
 }
 
 // toStr turns logEntry to string
 func (l *logEntry) toStr() string {
-	return strconv.Itoa(l.timestamp) + "\t" + l.service + "\t" + l.instance + "\t" + l.sender + "\t" +
-		l.level + "\t" + strconv.Itoa(l.code) + "\t" + l.status + "\t" + l.message
+	return strconv.Itoa(l.Timestamp) + "\t" + l.Service + "\t" + l.Instance + "\t" + l.Sender + "\t" +
+		l.Level + "\t" + strconv.Itoa(l.Code) + "\t" + l.Status + "\t" + l.Message
+}
+
+// toJson turns logEntry to json-encoded string
+func (l *logEntry) toJson() string {
+	jsoned, err := json.Marshal(l)
+	if err != nil {
+		syswarn("Could not convert logEntry to JSON: " + err.Error())
+		return "{\"ERROR\": \"Could not convert logEntry to JSON\"}"
+	}
+
+	return string(jsoned)
 }
 
 // log logs a message/error
@@ -110,12 +149,12 @@ func (no *notifier) log(note *Note) {
 	// Sanity check (will panic)
 	no.isOK()
 
-	// New log entry
+	// Create a new log entry
 	lg := logEntry{
-		timestamp: int(time.Now().Unix()),
-		service:   no.service,
-		instance:  no.instance,
-		sender:    note.Sender,
+		Timestamp: int(time.Now().Unix()),
+		Service:   no.service,
+		Instance:  no.instance,
+		Sender:    note.Sender,
 	}
 
 	switch msg := note.Value.(type) {
@@ -123,35 +162,36 @@ func (no *notifier) log(note *Note) {
 	case Notification:
 		if _, ok := no.notificationCodes[msg.Code]; !ok {
 			no.noteToSelf(Newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.Code))
-			lg.code = 1
+			lg.Code = 1
 		} else {
-			lg.code = msg.Code
+			lg.Code = msg.Code
 		}
-		lg.message = msg.Message
+		lg.Message = msg.Message
 
 	case error:
-		lg.code = 1
-		lg.message = msg.Error()
+		lg.Code = 1
+		lg.Message = msg.Error()
 
 	case string:
-		lg.code = 0
-		lg.message = msg
+		lg.Code = 0
+		lg.Message = msg
 
 	default:
-		lg.code = 999
-		lg.message = "Unknown value used in notify.Send"
+		lg.Code = 999
+		lg.Message = "Unknown value used in notify.Send"
 	}
 
 	// Determine level and status
-	levelStatus, _ := no.notificationCodes[lg.code]
-	lg.level = levelStatus[0]
-	lg.status = levelStatus[1]
+	levelStatus, _ := no.notificationCodes[lg.Code]
+	lg.Level = levelStatus[0]
+	lg.Status = levelStatus[1]
 
-	lg.correct()
-
-	// Write to file
-	if _, werr := no.logfilePtr.WriteString(lg.toStr() + "\n"); werr != nil {
-		syswarn("failed writing to log file: " + werr.Error()) // do not log to avoid infinite loop
+	// Write to all endpoints
+	str := lg.toStr()
+	for i, w := range no.endpointsPtr {
+		if _, werr := w.WriteString(str + "\n"); werr != nil {
+			syswarn("failed writing to " + strconv.Itoa(i) + "th endpoint: " + werr.Error()) // do not log to avoid infinite loop
+		}
 	}
 
 }

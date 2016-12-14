@@ -3,7 +3,7 @@ package notify
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -50,37 +50,40 @@ type Note struct {
 	Value  interface{}
 }
 
-// NewNotifier instantiates and returns a new notifier.
-// looping function and a (send-only) Notes channel.
+// NewNotifier instantiates and returns a new notifier and a (send-only) Notes channel.
 // Other elements of the system can notify the user/write to log by sending (notify.Send) to the noteChan.
+// Accepted endpoints: files.log and os.File implementations (e.g. os.Stdout). Notes will be sent to all
+// available endpoints.
 // In order to run the logging service, the looper function must be started.
 // If blocking behaviour is required, then the looping fuction should be started normally (otherwise as a goroutine).
-// Closing the noteChan exits the looper
-func NewNotifier(service string, instance string, logfile string, verbosity int, notifierCap int) (*notifier, chan<- *Note) {
+// Closing the noteChan exits the looper/notifier
+func NewNotifier(service string, instance string, logAll bool, notifierCap int, endpoints ...interface{}) (*notifier, chan<- *Note) {
 
 	no := notifier{}
 
-	// Check if the provided log file is valid
-	if strings.ToLower(filepath.Ext(logfile)) != ".log" {
-		syswarn("log file's extension is not *.log")
+	// Prepare endpoints
+	if len(endpoints) == 0 {
+		syswarn("No endpoints provided. Going to route all notes to os.Stdout")
+		endpoints = []interface{}{os.Stdout}
 	}
 
-	if f, err := os.Stat(logfile); os.IsNotExist(err) {
-		if _, berr := os.Stat(filepath.Dir(logfile)); os.IsNotExist(berr) {
-			if derr := os.MkdirAll(filepath.Dir(logfile), 0700); derr != nil {
-				syswarn("log file directory does not exist. Failed creating it: " + derr.Error())
+	for i, endpoint := range endpoints {
+
+		switch w := endpoint.(type) {
+
+		case string:
+			f, err := openLogFile(w)
+			if err == nil || f == os.Stdout {
+				no.endpointsPtr = append(no.endpointsPtr, f)
 			}
-		}
-	} else if err == nil && f.IsDir() {
-		syswarn("the provided log file is a directory. Will not be able to write notifications to file.")
-	}
 
-	// Open the log file
-	if f, err := os.OpenFile(logfile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err != nil {
-		syswarn("Failed opening log file: " + err.Error() + ". Using os.Stdout instead")
-		no.logfilePtr = os.Stdout
-	} else {
-		no.logfilePtr = f
+		case *os.File:
+			no.endpointsPtr = append(no.endpointsPtr, w)
+
+		default:
+			syswarn(strconv.Itoa(i+1) + "th endpoint is not supported. Either provide a file path (string) or an instance of *os.File")
+		}
+
 	}
 
 	// Set agent details
@@ -88,7 +91,7 @@ func NewNotifier(service string, instance string, logfile string, verbosity int,
 	no.service = service
 	no.instance = instance
 	no.noteChan = noteChan
-	no.verbosity = verbosity
+	no.logAll = logAll
 	no.safetySwitch = false
 	no.notificationCodes = standardCodes
 
@@ -178,36 +181,24 @@ func (no *notifier) Loop() {
 		case note, ok = <-no.noteChan:
 			if !ok {
 				no.log(&Note{"notifier", "Note channel has been closed. Exiting notifier loop."})
-				no.logfilePtr.Close()
+				for _, endpoint := range no.endpointsPtr {
+					if endpoint != os.Stdout {
+						endpoint.Close()
+					}
+				}
 				return
 			}
 		}
 
 		// Log (and maybe print)
-		switch msg := note.Value.(type) {
-
-		case error:
-			no.log(note)
-			if no.verbosity >= 2 {
-				syswarn(fmt.Sprintf("ERR\t %s -> %s\n", note.Sender, msg.Error()))
-			}
-
+		switch note.Value.(type) {
 		case string:
-			if no.verbosity >= 1 {
+			if no.logAll {
 				no.log(note)
 			}
-			if no.verbosity >= 2 {
-				syswarn(fmt.Sprintf("MSG\t %s -> %s\n", note.Sender, msg))
-			}
-
 		default:
-			if no.verbosity >= 0 {
-				no.log(note)
-			}
-			if no.verbosity >= 2 {
-				syswarn("Unknown note value type")
-			}
+			no.log(note)
 		}
-
 	}
+
 }
