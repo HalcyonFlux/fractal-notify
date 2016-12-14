@@ -20,7 +20,7 @@ func TestNotify(t *testing.T) {
 
 	// Instantiate the notifier(s)
 	noPrime := NewNotifier("MyService", "MyServiceInstance", true, 100, endpoints[0])
-	noSecond := NewNotifier("MyService", "MyServiceInstance", true, 100, endpoints[1], endpoints[2])
+	noSecond := NewNotifier("MyService", "MyServiceInstance", true, 100, endpoints[1:]...)
 
 	// Run the notification service in the background to avoid blocking
 	go noSecond.Run()
@@ -47,7 +47,7 @@ func TestNotify(t *testing.T) {
 	// Send error notifications to the other notifier
 	newErr := noSecond.Failure("MyMainThread")
 	if f, err := os.Open("/var/opt/myfunc.cfg"); err != nil {
-		newErr(3, "Could not open myfunc.cfg: "+err.Error()) // will log (and return) an error
+		newErr(3, "Could not open myfunc.cfg: %s", err.Error()) // will log (and return) an error
 	} else {
 		f.Close()
 	}

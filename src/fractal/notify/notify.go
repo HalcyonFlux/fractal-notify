@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 )
@@ -90,37 +89,43 @@ func (no *notifier) Sender(sender string) func(interface{}) error {
 // only the value of the error code and message to be passed.
 // Each unique sender (e.g. server, client, etc.) should have their own
 // personalized new and/or send.
-func (no *notifier) Failure(sender string) func(int, string) error {
-	return func(code int, message string) error {
-		return send(sender, newf(code, message), no.noteChan, &no.ops)
+func (no *notifier) Failure(sender string) func(int, string, ...interface{}) error {
+	return func(code int, format string, a ...interface{}) error {
+		return send(sender, newf(code, format, a...), no.noteChan, &no.ops)
 	}
 }
 
 // SetCodes replaces built-in notification codes with custom ones.
 // A partial replacement (e.g. codes 2-10) is also allowed, however only one
 // call to notifier.SetCodes is allowed per notifier.
-func (no *notifier) SetCodes(newCodes map[int][2]string) {
+func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 
 	// Sanity check (will panic)
 	no.isOK()
 
+	// Fail counter
+	fails := 0
+
 	// Only allow one change of codes per notifier
 	if no.safetySwitch {
-		fmt.Println()
-		no.noteToSelf(newf(999, "You are trying to change notification codes again. This action is not permitted."))
-		return
+		return no.noteToSelf(newf(999, "You are trying to change notification codes again. This action is not permitted."))
 	}
 
 	for code, notification := range newCodes {
 		if code <= 1 || code >= 999 {
-			no.noteToSelf(newf(999, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
+			no.noteToSelf(newf(4, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
 			delete(newCodes, code)
+			fails++
 		} else {
 			no.notificationCodes[code] = notification
 		}
 	}
 
-	no.notificationCodes = newCodes
+	if fails > 0 {
+		return newf(4, "Failed replacing %d status codes: invalid range", fails)
+	} else {
+		return nil
+	}
 
 }
 

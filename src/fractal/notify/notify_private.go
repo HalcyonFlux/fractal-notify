@@ -73,8 +73,15 @@ func openLogFile(logfile string) (*os.File, error) {
 
 // noteToSelf creates a note. This function is used to communicate internal problems.
 // This note will be logged
-func (no *notifier) noteToSelf(value interface{}) {
+func (no *notifier) noteToSelf(value interface{}) error {
 	no.noteChan <- &note{"notifier", &value}
+
+	switch err := value.(type) {
+	case error:
+		return err
+	default:
+		return nil
+	}
 }
 
 // isOK check is some assumptions made by the notifier are still valid
@@ -93,7 +100,12 @@ func (no *notifier) isOK() {
 // newf formats according to a format specifier and builds a Notification struct
 func newf(code int, format string, a ...interface{}) error {
 
-	args := []string{fmt.Sprintf(format, a)}
+	args := []string{}
+	if len(a) > 0 {
+		args = []string{fmt.Sprintf(format, a...)}
+	} else {
+		args = []string{format}
+	}
 
 	if code < 1 {
 		syswarn(fmt.Sprintf("An error should have greater than zero code. Changing %d to 1", code))
