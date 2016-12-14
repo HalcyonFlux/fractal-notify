@@ -3,6 +3,7 @@ package notify
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -30,6 +31,12 @@ func New(code int, args ...string) error {
 		syswarn(fmt.Sprintf("An error should have greater than zero code. Changing %d to 1", code))
 		code = 1
 	}
+
+	// Append some runtime information
+	if _, fn, line, ok := runtime.Caller(1); ok {
+		args = append(args, fmt.Sprintf(" -> [%s: %d]", fn, line))
+	}
+
 	return Notification{Code: code, Message: strings.Join(args, " ")}
 }
 
