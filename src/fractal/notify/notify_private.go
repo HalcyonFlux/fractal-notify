@@ -36,6 +36,7 @@ type notifier struct {
 	noteChan          chan *note        // Channel the notifier listens on
 	notificationCodes map[int][2]string // Map of notification codes and their meanings
 	safetySwitch      bool              // Indicator of whether notificationCodes have been changed
+	async             bool              // Indicator of whether notify.send should start goroutines or potentially block
 	ops               operations        // Lockable operations indicator
 	endpoints         endpoints         // Lockable slice of resources
 }
@@ -107,8 +108,8 @@ func newf(code int, format string, a ...interface{}) error {
 		args = []string{format}
 	}
 
-	if code < 1 {
-		syswarn(fmt.Sprintf("An error should have greater than zero code. Changing %d to 1", code))
+	if code < 0 {
+		syswarn(fmt.Sprintf("An error should have a non-zero code. Changing %d to 1", code))
 		code = 1
 	}
 
@@ -117,20 +118,28 @@ func newf(code int, format string, a ...interface{}) error {
 		args = append(args, fmt.Sprintf(" -> [%s: %d]", filepath.Base(fn), line))
 	}
 
-	return Notification{Code: code, Message: strings.Join(args, " ")}
+	return notification{code: code, message: strings.Join(args, " ")}
+}
+
+// route puts the note into the note channel
+func route(sender string, value interface{}, noteChan chan<- *note, ops *operations) {
+	ops.RLock()
+	if (*ops).halt != true {
+		noteChan <- &note{sender, &value}
+	} else {
+		syswarn(sender + " cannot send to a closed channel")
+	}
+	ops.RUnlock()
 }
 
 // send creates a note struct and sends it into the noteChan
-func send(sender string, value interface{}, noteChan chan<- *note, ops *operations) error {
-	ops.RLock()
-	if (*ops).halt != true {
-		go func() {
-			noteChan <- &note{sender, &value}
-		}()
+func send(sender string, value interface{}, noteChan chan<- *note, async bool, ops *operations) error {
+
+	if async {
+		go func() { route(sender, value, noteChan, ops) }()
 	} else {
-		syswarn("cannot send notifications: note channel is closed!")
+		route(sender, value, noteChan, ops)
 	}
-	ops.RUnlock()
 
 	switch err := value.(type) {
 	case error:
@@ -223,15 +232,15 @@ func (no *notifier) log(n *note) {
 
 	switch msg := (*n.Value).(type) {
 
-	case Notification:
+	case notification:
 
-		if _, ok := no.notificationCodes[msg.Code]; !ok {
-			no.noteToSelf(newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.Code))
+		if _, ok := no.notificationCodes[msg.code]; !ok {
+			no.noteToSelf(newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.code))
 			lg.Code = 1
 		} else {
-			lg.Code = msg.Code
+			lg.Code = msg.code
 		}
-		lg.Message = msg.Message
+		lg.Message = msg.message
 
 	case error:
 		lg.Code = 1

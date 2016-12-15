@@ -6,35 +6,47 @@ import (
 )
 
 // Notification is the standard error struct used in notify
-type Notification struct {
-	Code    int
-	Message string
+type notification struct {
+	code    int
+	message string
 }
 
 // Error returns the notification text
-func (e Notification) Error() string {
-	return e.Message
+func (e notification) Error() string {
+	return e.message
 }
 
 // IsCode checks whether the provided error has the error code %code%.
-// errors.error implementations that are not notify.Notification are going to be
+// errors.error implementations that are not notify.notification are going to be
 // given code = 1.
 func IsCode(code int, err error) bool {
-	if _, ok := err.(Notification); ok {
-		return code == err.(Notification).Code
+	if _, ok := err.(notification); ok {
+		return code == err.(notification).code
 	} else {
 		return code == 1
 	}
 }
 
-// NewNotifier instantiates and returns a new notifier and a (send-only) Notes channel.
-// Other elements of the system can notify the user/write to log by sending (notify.Send) to the noteChan.
-// Accepted endpoints: files.log and os.File implementations (e.g. os.Stdout). Notes will be sent to all
-// available endpoints.
-// In order to run the logging service, the looper function must be started.
-// If blocking behaviour is required, then the looping fuction should be started normally (otherwise as a goroutine).
-// Closing the noteChan exits the looper/notifier
-func NewNotifier(service string, instance string, logAll bool, notifierCap int, files ...interface{}) *notifier {
+// NewNotifier instantiates and returns a new notifier instance (notifier).
+// The notification service is started by running notifier.Run()
+// If blocking behaviour is required, then Run() should be started normally
+// (otherwise as a goroutine). The notification service is stopped by running
+// notifier.Exit(). This command will also exit a blocking Run().
+//
+// Accepted endpoints: string referenes to files (e.g. myservice.log) and
+// pointers to implementations of the os.File interface type (e.g. os.Stdout).
+// Notes will be sent to all defined endpoints in their specified order.
+//
+// Other elements of the system can notify the user/write to log by creating and
+// using send and fail functions (created by notifier.Sender, notifier.Failure).
+// By default these commands will block if the defined capacity of the notes
+// channel is too low for the notification stream. The notifier can be made
+// non-blocking by instantiating it with flag async=true. This will make all send
+// and fail commands non-blocking, but the order of log entries cannot be
+// guaranteed, i.e. issuing two sends sequentially can result in reversed log entry
+// order. It is thus best to set a higher capacity of the notes channel at instantiation.
+//
+func NewNotifier(service string, instance string, logAll bool, async bool, notifierCap int, files ...interface{}) *notifier {
 
 	// Initialize bare notifier
 	no := notifier{}
@@ -81,7 +93,7 @@ func NewNotifier(service string, instance string, logAll bool, notifierCap int, 
 // client, etc.) should have their own personalized send.
 func (no *notifier) Sender(sender string) func(interface{}) error {
 	return func(value interface{}) error {
-		return send(sender, value, no.noteChan, &no.ops)
+		return send(sender, value, no.noteChan, no.async, &no.ops)
 	}
 }
 
@@ -91,7 +103,7 @@ func (no *notifier) Sender(sender string) func(interface{}) error {
 // personalized new and/or send.
 func (no *notifier) Failure(sender string) func(int, string, ...interface{}) error {
 	return func(code int, format string, a ...interface{}) error {
-		return send(sender, newf(code, format, a...), no.noteChan, &no.ops)
+		return send(sender, newf(code, format, a...), no.noteChan, no.async, &no.ops)
 	}
 }
 
