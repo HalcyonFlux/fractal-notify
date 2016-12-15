@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"errors"
 	"os"
 	"strconv"
 )
@@ -84,6 +85,9 @@ func NewNotifier(service string, instance string, logAll bool, async bool, notif
 	no.logAll = logAll
 	no.safetySwitch = false
 	no.notificationCodes = standardCodes
+	no.async = async
+	no.ops.halt = false
+	no.ops.running = false
 
 	return &no
 }
@@ -115,14 +119,20 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	// Sanity check (will panic)
 	no.isOK()
 
-	// Fail counter
-	fails := 0
+	if no.IsReady() {
+		return newf(4, "Cannot change codes on a running notifier")
+	}
 
 	// Only allow one change of codes per notifier
 	if no.safetySwitch {
 		return no.noteToSelf(newf(999, "You are trying to change notification codes again. This action is not permitted."))
 	}
 
+	// Disable future changes
+	no.safetySwitch = true
+
+	// Change codes
+	fails := 0
 	for code, notification := range newCodes {
 		if code <= 1 || code >= 999 {
 			no.noteToSelf(newf(4, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
@@ -148,12 +158,17 @@ func (no *notifier) Run() {
 	// Sanity check
 	no.isOK()
 
-	no.endpoints.Lock()
+	// Enable operations
+	no.ops.Lock()
+	no.ops.halt = false
+	no.ops.running = true
+	no.ops.Unlock()
 
+	// Receive Notes
 	var n *note
 	var ok bool
 
-	// Receive Notes
+	no.endpoints.Lock()
 runLoop:
 	for {
 
@@ -179,22 +194,39 @@ runLoop:
 	}
 }
 
+// IsReady indicates if logging (writting to endpoints) has started
+func (no *notifier) IsReady() bool {
+	/*
+		no.ops.RLock()
+		defer no.ops.RUnlock()
+		return no.ops.running
+	*/
+	return true
+}
+
 // Exit closes the note channel and waits a little for the notifier to
-func (no *notifier) Exit() {
+func (no *notifier) Exit() error {
+
+	var err error
+	if !no.IsReady() {
+		err = errors.New(no.id() + " was not running at exit time.")
+	}
 
 	// Notify about exiting. Might block until space in the channel is available
-	var exitMSG interface{} = "Note channel has been closed. Exiting notifier loop."
-	no.noteChan <- &note{"notifier", &exitMSG}
+	send("notifier", "Note channel has been closed. Exiting notifier loop.", no.noteChan, no.async, &no.ops)
 
 	// Close channel and
 	no.ops.Lock()
 	no.ops.halt = true
+	running := no.ops.running
 	close(no.noteChan)
 	no.ops.Unlock()
 
 	// wait for the backlog to be written
-	for len(no.noteChan) > 0 {
-		// do nothing
+	if running {
+		for len(no.noteChan) > 0 {
+			// do nothing
+		}
 	}
 
 	// Close endpoints
@@ -206,4 +238,10 @@ func (no *notifier) Exit() {
 	}
 	no.endpoints.Unlock()
 
+	// Set status
+	no.ops.Lock()
+	no.ops.running = false
+	no.ops.Unlock()
+
+	return err
 }

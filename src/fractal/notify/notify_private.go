@@ -26,7 +26,8 @@ type endpoints struct {
 
 type operations struct {
 	sync.RWMutex      // Lock halt switch
-	halt         bool // Indicator of whether the notifier has been stopped
+	halt         bool // Indicator of whether operations are allowed
+	running      bool // Indicator of whether notifier.Run has been started
 }
 
 type notifier struct {
@@ -75,7 +76,8 @@ func openLogFile(logfile string) (*os.File, error) {
 // noteToSelf creates a note. This function is used to communicate internal problems.
 // This note will be logged
 func (no *notifier) noteToSelf(value interface{}) error {
-	no.noteChan <- &note{"notifier", &value}
+
+	send("notifier", value, no.noteChan, no.async, &no.ops)
 
 	switch err := value.(type) {
 	case error:
@@ -83,6 +85,11 @@ func (no *notifier) noteToSelf(value interface{}) error {
 	default:
 		return nil
 	}
+}
+
+// id returns notifier's details
+func (no *notifier) id() string {
+	return fmt.Sprintf("Notifier[%s][%s] %p", no.service, no.instance, no)
 }
 
 // isOK check is some assumptions made by the notifier are still valid
@@ -124,19 +131,21 @@ func newf(code int, format string, a ...interface{}) error {
 // route puts the note into the note channel
 func route(sender string, value interface{}, noteChan chan<- *note, ops *operations) {
 	ops.RLock()
+	defer ops.RUnlock()
+
 	if (*ops).halt != true {
 		noteChan <- &note{sender, &value}
 	} else {
 		syswarn(sender + " cannot send to a closed channel")
 	}
-	ops.RUnlock()
+
 }
 
 // send creates a note struct and sends it into the noteChan
 func send(sender string, value interface{}, noteChan chan<- *note, async bool, ops *operations) error {
 
 	if async {
-		go func() { route(sender, value, noteChan, ops) }()
+		go route(sender, value, noteChan, ops)
 	} else {
 		route(sender, value, noteChan, ops)
 	}
