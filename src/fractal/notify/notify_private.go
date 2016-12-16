@@ -15,8 +15,9 @@ import (
 // note is a struct used to transport notifications (string, error, notify.Notification)
 // to the note channel.
 type note struct {
-	Sender string
-	Value  *interface{}
+	Sender  string
+	Value   interface{}
+	Confirm chan<- bool
 }
 
 type endpoints struct {
@@ -38,6 +39,7 @@ type notifier struct {
 	notificationCodes map[int][2]string // Map of notification codes and their meanings
 	safetySwitch      bool              // Indicator of whether notificationCodes have been changed
 	async             bool              // Indicator of whether notify.send should start goroutines or potentially block
+	json              bool              // Indicator of whether logs should be written as json (each line a json object)
 	ops               operations        // Lockable operations indicator
 	endpoints         endpoints         // Lockable slice of resources
 }
@@ -77,7 +79,7 @@ func openLogFile(logfile string) (*os.File, error) {
 // This note will be logged
 func (no *notifier) noteToSelf(value interface{}) error {
 
-	send("notifier", value, no.noteChan, no.async, &no.ops)
+	send("notifier", value, nil, no.noteChan, no.async, &no.ops)
 
 	switch err := value.(type) {
 	case error:
@@ -129,25 +131,25 @@ func newf(code int, format string, a ...interface{}) error {
 }
 
 // route puts the note into the note channel
-func route(sender string, value interface{}, noteChan chan<- *note, ops *operations) {
+func route(sender string, value interface{}, confirm chan<- bool, noteChan chan<- *note, ops *operations) {
 	ops.RLock()
-	defer ops.RUnlock()
-
 	if (*ops).halt != true {
-		noteChan <- &note{sender, &value}
+		noteChan <- &note{sender, value, confirm}
 	} else {
+		confirm <- true
 		syswarn(sender + " cannot send to a closed channel")
 	}
+	ops.RUnlock()
 
 }
 
 // send creates a note struct and sends it into the noteChan
-func send(sender string, value interface{}, noteChan chan<- *note, async bool, ops *operations) error {
+func send(sender string, value interface{}, confirm chan<- bool, noteChan chan<- *note, async bool, ops *operations) error {
 
 	if async {
-		go route(sender, value, noteChan, ops)
+		go route(sender, value, confirm, noteChan, ops)
 	} else {
-		route(sender, value, noteChan, ops)
+		route(sender, value, confirm, noteChan, ops)
 	}
 
 	switch err := value.(type) {
@@ -228,6 +230,11 @@ func (l *logEntry) toJson() string {
 // 1481552049\tbeacon\tbeacon_server_01\tdispatcher]\tERR\t3\tSystemMalfunction\tCould not dispatch Job
 func (no *notifier) log(n *note) {
 
+	// Confirm the log has been processed
+	if n.Confirm != nil {
+		defer func() { n.Confirm <- true }()
+	}
+
 	// Sanity check (will panic)
 	no.isOK()
 
@@ -239,7 +246,7 @@ func (no *notifier) log(n *note) {
 		Sender:    n.Sender,
 	}
 
-	switch msg := (*n.Value).(type) {
+	switch msg := (n.Value).(type) {
 
 	case notification:
 
@@ -270,10 +277,17 @@ func (no *notifier) log(n *note) {
 	lg.Status = levelStatus[1]
 
 	// Write to all endpoints
-	str := lg.toStr()
+	var str string
+	if no.json {
+		str = lg.toJson()
+	} else {
+		str = lg.toStr()
+	}
+
 	for i, w := range no.endpoints.endpointsPtr {
 		if _, werr := w.WriteString(str + "\n"); werr != nil {
 			syswarn("failed writing to " + strconv.Itoa(i+1) + "th endpoint: " + werr.Error()) // do not log to avoid infinite loop
 		}
 	}
+
 }

@@ -2,8 +2,10 @@ package notify
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -26,7 +28,7 @@ func ignoreStdOut(t *testing.T) *os.File {
 }
 
 // Readme use case
-func sTestNotify(t *testing.T) {
+func TestNotify(t *testing.T) {
 
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
@@ -39,8 +41,8 @@ func sTestNotify(t *testing.T) {
 	}
 
 	// Instantiate the notifier(s)
-	noPrime := NewNotifier("MyService", "MyServiceInstance", true, false, 100, endpoints[0])
-	noSecond := NewNotifier("MyService", "MyServiceInstance", true, false, 100, endpoints[1:]...)
+	noPrime := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100, endpoints[0])
+	noSecond := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100, endpoints[1:]...)
 
 	// Run the secondary notification service in the background to avoid blocking
 	go noSecond.Run()
@@ -100,7 +102,7 @@ func sTestNotify(t *testing.T) {
 	noSecond.Exit()
 }
 
-func sTestSetCodes(t *testing.T) {
+func TestSetCodes(t *testing.T) {
 
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
@@ -137,7 +139,7 @@ func sTestSetCodes(t *testing.T) {
 	}
 
 	for i, test := range tests {
-		notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+		notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 		if i == 3 {
 			notifier.SetCodes(test.newCodes)
 		}
@@ -151,22 +153,22 @@ func sTestSetCodes(t *testing.T) {
 	}
 }
 
-func sTestExitWithoutRunning(t *testing.T) {
+func TestExitWithoutRunning(t *testing.T) {
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 
 	if err := notifier.Exit(); err == nil {
 		t.Error("Inactive notifier should complain about exiting")
 	}
 }
 
-func sTestExitBacklog(t *testing.T) {
+func TestExitBacklog(t *testing.T) {
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 	send := notifier.Sender("TestExitBacklog")
 
 	for i := 1; i <= 50; i++ {
@@ -185,11 +187,11 @@ func sTestExitBacklog(t *testing.T) {
 
 }
 
-func sTestExitBacklog2(t *testing.T) {
+func TestExitBacklog2(t *testing.T) {
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 	send := notifier.Sender("TestExitBacklog2")
 
 	for i := 1; i <= 50; i++ {
@@ -213,7 +215,7 @@ func sTestExitBacklog2(t *testing.T) {
 
 }
 
-func sTestUnsuportedEndpoint(t *testing.T) {
+func TestUnsuportedEndpoint(t *testing.T) {
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
 
@@ -223,17 +225,17 @@ func sTestUnsuportedEndpoint(t *testing.T) {
 		file: "mylog.log",
 	}
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100, badEndPoint)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100, badEndPoint)
 	go notifier.Run()
 	time.Sleep(50 * time.Millisecond)
 	notifier.Exit()
 }
 
-func sTestNegativeErrorCode(t *testing.T) {
+func TestNegativeErrorCode(t *testing.T) {
 	old := ignoreStdOut(t)
 	defer func() { os.Stdout = old }()
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100)
 	fail := notifier.Failure("TestNegativeErrorCode")
 	err := fail(-1, "Illegal code")
 	if !IsCode(1, err) {
@@ -251,7 +253,7 @@ func TestUnsupportedValue(t *testing.T) {
 	os.Stdout = w
 	defer func() { w.Close(); os.Stdout = old }()
 
-	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, 100)
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100)
 	send := notifier.Sender("TestUnsupportedValue")
 
 	badValue := struct {
@@ -260,23 +262,71 @@ func TestUnsupportedValue(t *testing.T) {
 		greet: "Hello, World!",
 	}
 
-	go notifier.Run()
 	send(badValue)
-
+	go notifier.Run()
 	for !notifier.IsReady() {
-		// wait for logging to start
+		// Wait for notifier to start
 	}
 
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	outC := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		outC <- buf.String()
+	}()
 
-	response := strings.Split(buf.String(), "\t")
+	if err := notifier.Exit(); err != nil {
+		t.Error(err.Error())
+	}
+
+	w.Close()
+	os.Stdout = old
+	out := <-outC
+
+	splits := strings.Split(out, "\n")
+	if len(splits) != 4 {
+		t.Error("Response from io.Pipe does not contain exactly four lines: " + strconv.Itoa(len(splits)))
+	}
+	response := strings.Split(splits[1], "\t")
 
 	if len(response) != 8 {
 		t.Error("log: response does not contain 8 fields: " + strconv.Itoa(len(response)))
 	}
 
-	if response[6] != "999" || response[7] != "Unknown value used in notify.send" {
+	if response[5] != "999" || response[7] != "Unknown value used in notify.send" {
 		t.Error("log: bad response to an unsupported value:" + strings.Join(response, " "))
 	}
+
+}
+
+func TestJSON(t *testing.T) {
+
+	logfile := os.Getenv("HOME") + "/mytestlog.log"
+	defer os.Remove(logfile)
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, true, 100, logfile)
+	fail := notifier.Failure("TestJSON")
+	fail(0, "Hello, World")
+
+	go notifier.Run()
+	for !notifier.IsReady() {
+		// Wait for notifier to start
+	}
+	notifier.Exit()
+
+	contents, err := ioutil.ReadFile(logfile)
+	if err != nil {
+		t.Error("Failed reading mytestlog.log: " + err.Error())
+	}
+
+	splits := strings.Split(string(contents), "\n")
+	log := logEntry{}
+	if errJson := json.Unmarshal([]byte(splits[0]), &log); errJson != nil {
+		t.Error("Failed unmarshaling log entry")
+	} else {
+		if log.Status != "GeneralMessage" {
+			t.Errorf("Status mismatch. Expected '%s', got '%s'", "GeneralMessage", log.Status)
+		}
+	}
+
 }

@@ -47,7 +47,7 @@ func IsCode(code int, err error) bool {
 // guaranteed, i.e. issuing two sends sequentially can result in reversed log entry
 // order. It is thus best to set a higher capacity of the notes channel at instantiation.
 //
-func NewNotifier(service string, instance string, logAll bool, async bool, notifierCap int, files ...interface{}) *notifier {
+func NewNotifier(service string, instance string, logAll bool, async bool, json bool, notifierCap int, files ...interface{}) *notifier {
 
 	// Initialize bare notifier
 	no := notifier{}
@@ -86,6 +86,7 @@ func NewNotifier(service string, instance string, logAll bool, async bool, notif
 	no.safetySwitch = false
 	no.notificationCodes = standardCodes
 	no.async = async
+	no.json = json
 	no.ops.halt = false
 	no.ops.running = false
 
@@ -97,7 +98,8 @@ func NewNotifier(service string, instance string, logAll bool, async bool, notif
 // client, etc.) should have their own personalized send.
 func (no *notifier) Sender(sender string) func(interface{}) error {
 	return func(value interface{}) error {
-		return send(sender, value, no.noteChan, no.async, &no.ops)
+		err := send(sender, value, nil, no.noteChan, no.async, &no.ops)
+		return err
 	}
 }
 
@@ -107,7 +109,8 @@ func (no *notifier) Sender(sender string) func(interface{}) error {
 // personalized new and/or send.
 func (no *notifier) Failure(sender string) func(int, string, ...interface{}) error {
 	return func(code int, format string, a ...interface{}) error {
-		return send(sender, newf(code, format, a...), no.noteChan, no.async, &no.ops)
+		err := send(sender, newf(code, format, a...), nil, no.noteChan, no.async, &no.ops)
+		return err
 	}
 }
 
@@ -182,7 +185,7 @@ runLoop:
 		}
 
 		// Write to endpoints
-		switch (*n.Value).(type) {
+		switch (n.Value).(type) {
 		case string:
 			if no.logAll {
 				no.log(n)
@@ -196,38 +199,29 @@ runLoop:
 
 // IsReady indicates if logging (writting to endpoints) has started
 func (no *notifier) IsReady() bool {
-	/*
-		no.ops.RLock()
-		defer no.ops.RUnlock()
-		return no.ops.running
-	*/
-	return true
+	no.ops.RLock()
+	defer no.ops.RUnlock()
+	return no.ops.running
 }
 
 // Exit closes the note channel and waits a little for the notifier to
 func (no *notifier) Exit() error {
 
-	var err error
 	if !no.IsReady() {
-		err = errors.New(no.id() + " was not running at exit time.")
+		return errors.New(no.id() + " was not running at exit time.")
 	}
 
-	// Notify about exiting. Might block until space in the channel is available
-	send("notifier", "Note channel has been closed. Exiting notifier loop.", no.noteChan, no.async, &no.ops)
-
-	// Close channel and
+	// Halt operations and issue last log entry
 	no.ops.Lock()
 	no.ops.halt = true
-	running := no.ops.running
-	close(no.noteChan)
+	confirm := make(chan bool)
+	no.noteChan <- &note{"notifier", "Note channel has been closed. Exiting notifier loop.", confirm}
 	no.ops.Unlock()
 
-	// wait for the backlog to be written
-	if running {
-		for len(no.noteChan) > 0 {
-			// do nothing
-		}
-	}
+	// Wait for confirmation that all logs have been written.
+	<-confirm
+	close(confirm)
+	close(no.noteChan)
 
 	// Close endpoints
 	no.endpoints.Lock()
@@ -243,5 +237,5 @@ func (no *notifier) Exit() error {
 	no.ops.running = false
 	no.ops.Unlock()
 
-	return err
+	return nil
 }
