@@ -413,7 +413,7 @@ func TestNoteToSelf(t *testing.T) {
 
 	err1 := notifier.noteToSelf("simple message")
 	err2 := notifier.noteToSelf(errors.New("error message"))
-	err3 := notifier.noteToSelf(newf(999, "error message"))
+	err3 := notifier.noteToSelf(newf(999, 1, "error message"))
 
 	if err1 != nil {
 		t.Error("noteToSelf should return a string if string given")
@@ -465,7 +465,7 @@ func TestEmptyNotifier(t *testing.T) {
 	go notifier.log(&note{"", "", confirm})
 	<-confirm
 
-	go notifier.log(&note{"", newf(1000, "no such code"), confirm})
+	go notifier.log(&note{"", newf(1000, 2, "no such code"), confirm})
 	<-confirm
 
 	notifier.Exit()

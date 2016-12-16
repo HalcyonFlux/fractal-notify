@@ -119,7 +119,7 @@ func (no *notifier) Sender(sender string) func(interface{}) error {
 // personalized new and/or send.
 func (no *notifier) Failure(sender string) func(int, string, ...interface{}) error {
 	return func(code int, format string, a ...interface{}) error {
-		err := send(sender, newf(code, format, a...), nil, no.noteChan, no.async, &no.ops)
+		err := send(sender, newf(code, 2, format, a...), nil, no.noteChan, no.async, &no.ops)
 		return err
 	}
 }
@@ -133,12 +133,12 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	no.isOK()
 
 	if no.IsReady() {
-		return newf(4, "Cannot change codes on a running notifier")
+		return newf(4, 1, "Cannot change codes on a running notifier")
 	}
 
 	// Only allow one change of codes per notifier
 	if no.safetySwitch {
-		return no.noteToSelf(newf(999, "You are trying to change notification codes again. This action is not permitted."))
+		return no.noteToSelf(newf(999, 1, "You are trying to change notification codes again. This action is not permitted."))
 	}
 
 	// Disable future changes
@@ -148,7 +148,7 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	fails := 0
 	for code, notification := range newCodes {
 		if code <= 1 || code >= 999 {
-			no.noteToSelf(newf(4, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
+			no.noteToSelf(newf(4, 1, "Only notification codes 1 < code < 999 are replaceable. Removing '%d'", code))
 			delete(newCodes, code)
 			fails++
 		} else {
@@ -157,7 +157,7 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	}
 
 	if fails > 0 {
-		return newf(4, "Failed replacing %d status codes: invalid range", fails)
+		return newf(4, 1, "Failed replacing %d status codes: invalid range", fails)
 	} else {
 		return nil
 	}

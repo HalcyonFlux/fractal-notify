@@ -112,7 +112,7 @@ func (no *notifier) isOK() {
 }
 
 // newf formats according to a format specifier and builds a Notification struct
-func newf(code int, format string, a ...interface{}) error {
+func newf(code int, callerDepth int, format string, a ...interface{}) error {
 
 	args := []string{}
 	if len(a) > 0 {
@@ -127,7 +127,7 @@ func newf(code int, format string, a ...interface{}) error {
 	}
 
 	// Append some runtime information
-	if _, fn, line, ok := runtime.Caller(1); ok {
+	if _, fn, line, ok := runtime.Caller(callerDepth); ok {
 		args = append(args, fmt.Sprintf(" -> [%s: %d]", filepath.Base(fn), line))
 	}
 
@@ -149,6 +149,14 @@ func route(sender string, value *interface{}, confirm chan<- bool, noteChan chan
 
 // send creates a note struct and sends it into the noteChan
 func send(sender string, value interface{}, confirm chan<- bool, noteChan chan<- *note, async bool, ops *operations) error {
+
+	// Transfrom error to notification
+	_, ok1 := value.(notification)
+	_, ok2 := value.(error)
+
+	if !ok1 && ok2 {
+		value = newf(1, 3, value.(error).Error())
+	}
 
 	if async {
 		go route(sender, &value, confirm, noteChan, ops)
@@ -257,7 +265,7 @@ func (no *notifier) log(n *note) {
 	case notification:
 
 		if _, ok := no.notificationCodes[msg.code]; !ok {
-			no.noteToSelf(newf(999, "Unknown error code used. Replacing '%d' with '1'", msg.code))
+			no.noteToSelf(newf(999, 1, "Unknown error code used. Replacing '%d' with '1'", msg.code))
 			lg.Code = 1
 		} else {
 			lg.Code = msg.code
