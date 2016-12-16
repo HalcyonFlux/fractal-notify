@@ -136,16 +136,12 @@ func TestSetCodes(t *testing.T) {
 		{codesOK, false},
 		{codesBad1, true},
 		{codesBad2, true},
-		{codesOK, true}, // Will set codes twice and fail
 		{codesOK, true}, // Cannot set if notifier is already running
 	}
 
 	for i, test := range tests {
 		notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 		if i == 3 {
-			notifier.SetCodes(test.newCodes)
-		}
-		if i == 4 {
 			go notifier.Run()
 			for !notifier.isReady() {
 				// wait for start

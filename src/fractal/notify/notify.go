@@ -93,7 +93,6 @@ func NewNotifier(service string, instance string, logAll bool, async bool, json 
 	no.instance = instance
 	no.noteChan = noteChan
 	no.logAll = logAll
-	no.safetySwitch = false
 	no.notificationCodes = standardCodes
 	no.async = async
 	no.json = json
@@ -135,14 +134,6 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	if no.isReady() {
 		return newf(4, 1, "Cannot change codes on a running notifier")
 	}
-
-	// Only allow one change of codes per notifier
-	if no.safetySwitch {
-		return no.noteToSelf(newf(999, 1, "You are trying to change notification codes again. This action is not permitted."))
-	}
-
-	// Disable future changes
-	no.safetySwitch = true
 
 	// Change codes
 	fails := 0
