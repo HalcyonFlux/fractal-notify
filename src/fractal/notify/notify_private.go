@@ -79,14 +79,18 @@ func openLogFile(logfile string) (*os.File, error) {
 // This note will be logged
 func (no *notifier) noteToSelf(value interface{}) error {
 
-	send("notifier", value, nil, no.noteChan, no.async, &no.ops)
+	resp := send("notifier", value, nil, no.noteChan, no.async, &no.ops)
 
-	switch err := value.(type) {
+	switch err := resp.(type) {
+
+	case notification:
+		return err
 	case error:
 		return err
 	default:
 		return nil
 	}
+
 }
 
 // id returns notifier's details
@@ -131,10 +135,10 @@ func newf(code int, format string, a ...interface{}) error {
 }
 
 // route puts the note into the note channel
-func route(sender string, value interface{}, confirm chan<- bool, noteChan chan<- *note, ops *operations) {
+func route(sender string, value *interface{}, confirm chan<- bool, noteChan chan<- *note, ops *operations) {
 	ops.RLock()
 	if (*ops).halt != true {
-		noteChan <- &note{sender, value, confirm}
+		noteChan <- &note{sender, *value, confirm}
 	} else {
 		confirm <- true
 		syswarn(sender + " cannot send to a closed channel")
@@ -147,12 +151,14 @@ func route(sender string, value interface{}, confirm chan<- bool, noteChan chan<
 func send(sender string, value interface{}, confirm chan<- bool, noteChan chan<- *note, async bool, ops *operations) error {
 
 	if async {
-		go route(sender, value, confirm, noteChan, ops)
+		go route(sender, &value, confirm, noteChan, ops)
 	} else {
-		route(sender, value, confirm, noteChan, ops)
+		route(sender, &value, confirm, noteChan, ops)
 	}
 
 	switch err := value.(type) {
+	case notification:
+		return err
 	case error:
 		return err
 	default:
@@ -275,6 +281,9 @@ func (no *notifier) log(n *note) {
 	levelStatus, _ := no.notificationCodes[lg.Code]
 	lg.Level = levelStatus[0]
 	lg.Status = levelStatus[1]
+
+	// Correct entries
+	lg.correct()
 
 	// Write to all endpoints
 	var str string

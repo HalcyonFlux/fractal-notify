@@ -58,6 +58,7 @@ func NewNotifier(service string, instance string, logAll bool, async bool, json 
 		files = []interface{}{os.Stdout}
 	}
 
+	endpointSlice := []*os.File{}
 	for i, endpoint := range files {
 
 		switch w := endpoint.(type) {
@@ -65,16 +66,25 @@ func NewNotifier(service string, instance string, logAll bool, async bool, json 
 		case string:
 			f, err := openLogFile(w)
 			if err == nil || f == os.Stdout {
-				no.endpoints.endpointsPtr = append(no.endpoints.endpointsPtr, f)
+				endpointSlice = append(endpointSlice, f)
 			}
 
 		case *os.File:
-			no.endpoints.endpointsPtr = append(no.endpoints.endpointsPtr, w)
+			endpointSlice = append(endpointSlice, w)
 
 		default:
 			syswarn(strconv.Itoa(i+1) + "th endpoint is not supported. Either provide a file path (string) or an instance of *os.File")
 		}
 
+	}
+
+	// Remove duplicates
+	dups := make(map[*os.File]bool)
+	for _, fi := range endpointSlice {
+		if _, ok := dups[fi]; !ok {
+			dups[fi] = true
+			no.endpoints.endpointsPtr = append(no.endpoints.endpointsPtr, fi)
+		}
 	}
 
 	// Set agent details

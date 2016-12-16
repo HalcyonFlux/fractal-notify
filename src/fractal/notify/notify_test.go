@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -136,12 +137,19 @@ func TestSetCodes(t *testing.T) {
 		{codesBad1, true},
 		{codesBad2, true},
 		{codesOK, true}, // Will set codes twice and fail
+		{codesOK, true}, // Cannot set if notifier is already running
 	}
 
 	for i, test := range tests {
 		notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100)
 		if i == 3 {
 			notifier.SetCodes(test.newCodes)
+		}
+		if i == 4 {
+			go notifier.Run()
+			for !notifier.IsReady() {
+				// wait for start
+			}
 		}
 		if err := notifier.SetCodes(test.newCodes); (err != nil) != test.err {
 			if err != nil {
@@ -327,6 +335,180 @@ func TestJSON(t *testing.T) {
 		if log.Status != "GeneralMessage" {
 			t.Errorf("Status mismatch. Expected '%s', got '%s'", "GeneralMessage", log.Status)
 		}
+	}
+
+}
+
+func TestCodes(t *testing.T) {
+
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100)
+	fail := notifier.Failure("TestCodes")
+	err1 := fail(0, "Hello, World")
+
+	if err1.Error()[0:12] != "Hello, World" {
+		t.Error("Wrong message returned by fail: " + err1.Error()[0:12])
+	}
+
+	if IsCode(1, err1) {
+		t.Error("err1 has code 0, not 1")
+	}
+
+	if !IsCode(1, errors.New("Oops")) {
+		t.Error("The standard error should be treated as if having code = 1")
+	}
+
+}
+
+func TestBadLogRef(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100, "/var/log/syslog")
+	notifier2 := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100, os.Getenv("HOME")+"/mytestdir/loggy.log")
+	defer os.Remove(os.Getenv("HOME") + "/mytestdir/loggy.log")
+	notifier3 := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100, os.Getenv("HOME"))
+
+	if notifier.endpoints.endpointsPtr[0] != os.Stdout {
+		t.Error("Bad log reference should be replaced by os.Stdout")
+	}
+
+	if notifier2.endpoints.endpointsPtr[0] == nil {
+		t.Error("Failed attaching any endpoint")
+	}
+
+	if _, err := os.Stat(os.Getenv("HOME") + "/mytestdir/loggy.log"); os.IsNotExist(err) {
+		t.Error("Failed creating missing logfile")
+	}
+
+	if notifier3.endpoints.endpointsPtr[0] != os.Stdout {
+		t.Error("Used an existing directory as logfile. Should use os.Stdout instead")
+	}
+
+}
+
+func TestRepeatedEndpoints(t *testing.T) {
+
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100, os.Stdout, "mylog", os.Stdout)
+	defer os.Remove("mylog")
+
+	if len(notifier.endpoints.endpointsPtr) == 3 {
+		os.Stdout = old
+		fmt.Println(notifier.endpoints.endpointsPtr)
+		t.Error("Failed ignoring duplicate endpoints")
+	}
+
+}
+
+func TestNoteToSelf(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100)
+
+	err1 := notifier.noteToSelf("simple message")
+	err2 := notifier.noteToSelf(errors.New("error message"))
+	err3 := notifier.noteToSelf(newf(999, "error message"))
+
+	if err1 != nil {
+		t.Error("noteToSelf should return a string if string given")
+	}
+
+	if _, ok := err2.(error); !ok {
+		t.Error("noteToSelf should return an error if error given")
+	}
+
+	if _, ok := err3.(notification); !ok || err3.(notification).code != 999 {
+		t.Error("noteToSelf should return a notification with level 999 if error given")
+	}
+
+}
+
+func TestMissingCodes(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, true, false, 100)
+	notifier.notificationCodes = map[int][2]string{
+		0: [2]string{"MSG", "GeneralMessage"},
+		1: [2]string{"ERR", "GeneralError"},
+		3: [2]string{"ERR", "FailedAction"},
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Should panic if sysCodes are missing!")
+		}
+	}()
+	notifier.isOK()
+
+}
+
+func TestEmptyNotifier(t *testing.T) {
+
+	logfile := os.Getenv("HOME") + "/mytestlog2.log"
+	defer os.Remove(logfile)
+
+	notifier := NewNotifier("", "", true, true, true, 100, logfile)
+
+	go notifier.Run()
+	for !notifier.IsReady() {
+		// Wait for start
+	}
+
+	confirm := make(chan bool)
+	go notifier.log(&note{"", "", confirm})
+	<-confirm
+
+	go notifier.log(&note{"", newf(1000, "no such code"), confirm})
+	<-confirm
+
+	notifier.Exit()
+
+	contents, err := ioutil.ReadFile(logfile)
+	if err != nil {
+		t.Error("Failed reading mytestlog.log: " + err.Error())
+	}
+
+	splits := strings.Split(string(contents), "\n")
+	log := logEntry{}
+	if errJson := json.Unmarshal([]byte(splits[0]), &log); errJson != nil {
+		t.Error("Failed unmarshaling log entry")
+	}
+
+	if log.Service != "N/A" {
+		t.Errorf("Failed correcting missing service")
+	}
+	if log.Instance != "N/A" {
+		t.Errorf("Failed correcting missing instance")
+	}
+	if log.Sender != "N/A" {
+		t.Errorf("Failed correcting missing sender")
+	}
+	if log.Level != "MSG" {
+		t.Errorf("Failed correcting missing level")
+	}
+	if log.Code != 0 {
+		t.Errorf("Failed correcting missing code")
+	}
+	if log.Status != "GeneralMessage" {
+		t.Errorf("Failed correcting missing status")
+	}
+	if log.Message != "N/A" {
+		t.Errorf("Failed correcting missing message")
+	}
+
+	if errJson := json.Unmarshal([]byte(splits[1]), &log); errJson != nil {
+		t.Error("Failed unmarshaling log entry")
+	}
+
+	if log.Code != 1 {
+		t.Error("Failed correcting non-existing code")
 	}
 
 }
