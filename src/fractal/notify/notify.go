@@ -132,7 +132,7 @@ func (no *notifier) SetCodes(newCodes map[int][2]string) error {
 	// Sanity check (will panic)
 	no.isOK()
 
-	if no.IsReady() {
+	if no.isReady() {
 		return newf(4, 1, "Cannot change codes on a running notifier")
 	}
 
@@ -207,17 +207,17 @@ runLoop:
 	}
 }
 
-// IsReady indicates if logging (writting to endpoints) has started
-func (no *notifier) IsReady() bool {
-	no.ops.RLock()
-	defer no.ops.RUnlock()
-	return no.ops.running
+// Wait waits until notifier is ready
+func (no *notifier) WarmUp() {
+	for !no.isReady() {
+		// Wait for notifier to start
+	}
 }
 
 // Exit closes the note channel and waits a little for the notifier to
 func (no *notifier) Exit() error {
 
-	if !no.IsReady() {
+	if !no.isReady() {
 		return errors.New(no.id() + " was not running at exit time.")
 	}
 
@@ -225,7 +225,7 @@ func (no *notifier) Exit() error {
 	no.ops.Lock()
 	no.ops.halt = true
 	confirm := make(chan bool)
-	no.noteChan <- &note{"notifier", "Note channel has been closed. Exiting notifier loop.", confirm}
+	no.noteChan <- &note{"notifier", "Exit() command has been executed. Stopping the notification service.", confirm}
 	no.ops.Unlock()
 
 	// Wait for confirmation that all logs have been written.

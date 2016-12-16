@@ -75,6 +75,13 @@ func openLogFile(logfile string) (*os.File, error) {
 	}
 }
 
+// isReady indicates if logging (writting to endpoints) has started
+func (no *notifier) isReady() bool {
+	no.ops.RLock()
+	defer no.ops.RUnlock()
+	return no.ops.running
+}
+
 // noteToSelf creates a note. This function is used to communicate internal problems.
 // This note will be logged
 func (no *notifier) noteToSelf(value interface{}) error {

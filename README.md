@@ -20,57 +20,40 @@ function to safely verify that the provided error has a specific code.
 
 ### Displaying and logging notifications
 
-To send a note to an existing notifier, one can use `notify.Send`:
 
 ```go
-if x > 5 {
-  notify.Send("server", "x should not be greater than 5", noteChan)
-  return notify.New(1, "Bad value (x>5)")
-}
-```
-
-If an error was supplied to`notify.Send`, it will return the same error
-back, which allows for a simplified syntax:
-
-```go
-if x > 5 {
-  return notify.Send("server",notify.New(1,"Bad value (x>5)"),noteChan)   
-}
-```
-
-The most comfortable way of using `notify` is by creating a personalized Send or New
-function, e.g:
-
-```go
-notifier, noteChan := notify.NewNotifier("MyService","MyServiceInstance","/var/logs/myservice/myservice.log",2,100)
-send := notifier.PersonalizeSend("server")
-newErr := notifier.PersonalizeNew("server")
+notifier := notify.NewNotifier("MyService","MyServiceInstance","/var/logs/myservice/myservice.log",false,true,false,2,100)
+send := notifier.Sender("server")
+fail := notifier.Failure("server")
 // ...
 // ...
 // ...
 send("Verifying that x <= 5")
 if x > 5 {
-  return newErr(1,"Bad value (x>5)")
+  return fail(1,"Bad value (x>5)")
 }
+// ...
+
 ```
 
 ### Endpoints
 
 A notifier can have any number of endpoints he'll send notes to. A valid endpoint
-is a filename (string) or any type implementing the `io.Writer` interface. One good
-use case of using several interfaces is writing logs to a file and simultaneously
+is a filename (string) or any type implementing the `os.File` interface. One good
+use case of using several endpoints is writing logs to a file and simultaneously
 outputing to the standard output (`os.Stdout`), e.g.:
 
 ```go
-notifier, noteChan := notify.NewNotifier("friend","greeter 1",true,100,"~/world.log", os.Stdout)
-go notifier.Loop()
+notifie := notify.NewNotifier("friend","greeter 1",true,100,"~/world.log", os.Stdout)
+go notifier.Run()
+notifier.WarmUp() // will block until notifier is ready
 
-send := notifier.PersonalizeSend("friend")
+send := notifier.Sender("friend")
 
 send("Hello")
 send("World!")
 
-close(noteChan)
+notifier.Exit()
 ```
 
 `notify` also plays well with `fractal/beacon`, i.e. logs and messages can be
@@ -180,7 +163,7 @@ This small example generates following log entries:
 1481905463	MyService	MyServiceInstance	MyGoRoutine	ERR	3	FailedAction	8th iteration: something bad happened  -> [main.go: 40]
 1481905464	MyService	MyServiceInstance	MyGoRoutine	MSG	0	GeneralMessage	9th iteration: nothing bad happened
 1481905464	MyService	MyServiceInstance	MyGoRoutine	ERR	3	FailedAction	10th iteration: something bad happened  -> [main.go: 40]
-1481905465	MyService	MyServiceInstance	notifier	MSG	0	GeneralMessage	Note channel has been closed. Exiting notifier loop.
+1481905465	MyService	MyServiceInstance	notifier	MSG	0	GeneralMessage	Exit() command has been executed. Stopping the notification. service
 ```
 
 and
@@ -188,7 +171,7 @@ and
 ```plain
 1481905460	MyService	MyServiceInstance	MyMainThread	ERR	3	FailedAction	Could not open myfunc.cfg: open /var/opt/myfunc.cfg: no such file or directory  -> [main.go: 54]
 1481905460	MyService	MyServiceInstance	MyMainThread	MSG	0	GeneralMessage	Trying to open myfunc.cfg  -> [main.go: 52]
-1481905465	MyService	MyServiceInstance	notifier	MSG	0	GeneralMessage	Note channel has been closed. Exiting notifier loop.
+1481905465	MyService	MyServiceInstance	notifier	MSG	0	GeneralMessage	Exit() command has been executed. Stopping the notification service.
 ```
 
 ## notify.New AND errors.New

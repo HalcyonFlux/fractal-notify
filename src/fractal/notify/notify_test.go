@@ -147,7 +147,7 @@ func TestSetCodes(t *testing.T) {
 		}
 		if i == 4 {
 			go notifier.Run()
-			for !notifier.IsReady() {
+			for !notifier.isReady() {
 				// wait for start
 			}
 		}
@@ -211,7 +211,7 @@ func TestExitBacklog2(t *testing.T) {
 	}
 
 	go notifier.Run()
-	for !notifier.IsReady() {
+	for !notifier.isReady() {
 		// wait for logging to start
 	}
 
@@ -272,7 +272,7 @@ func TestUnsupportedValue(t *testing.T) {
 
 	send(badValue)
 	go notifier.Run()
-	for !notifier.IsReady() {
+	for !notifier.isReady() {
 		// Wait for notifier to start
 	}
 
@@ -317,7 +317,7 @@ func TestJSON(t *testing.T) {
 	fail(0, "Hello, World")
 
 	go notifier.Run()
-	for !notifier.IsReady() {
+	for !notifier.isReady() {
 		// Wait for notifier to start
 	}
 	notifier.Exit()
@@ -457,7 +457,7 @@ func TestEmptyNotifier(t *testing.T) {
 	notifier := NewNotifier("", "", true, true, true, 100, logfile)
 
 	go notifier.Run()
-	for !notifier.IsReady() {
+	for !notifier.isReady() {
 		// Wait for start
 	}
 
