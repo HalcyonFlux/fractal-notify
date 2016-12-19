@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// Notification is the standard error struct used in notify
+type notification struct {
+	code    int
+	message string
+}
+
 // note is a struct used to transport notifications (string, error, notify.Notification)
 // to the note channel.
 type note struct {
@@ -31,18 +37,8 @@ type operations struct {
 	running      bool // Indicator of whether notifier.Run has been started
 }
 
-type notifier struct {
-	service           string            // Service that uses the notifier (e.g. fractal-beacon)
-	instance          string            // Unique instance name of the service (e.g. beacon_server_01)
-	logAll            bool              // If true, also logs non-error messages
-	noteChan          chan *note        // Channel the notifier listens on
-	notificationCodes map[int][2]string // Map of notification codes and their meanings
-	safetySwitch      bool              // Indicator of whether notificationCodes have been changed
-	async             bool              // Indicator of whether notify.send should start goroutines or potentially block
-	json              bool              // Indicator of whether logs should be written as json (each line a json object)
-	ops               operations        // Lockable operations indicator
-	endpoints         endpoints         // Lockable slice of resources
-}
+// Slice containing pointers to open files.
+var usedFileEndpoints []string
 
 // syswarn prints a warning without logging it
 func syswarn(warn string) {
@@ -76,7 +72,7 @@ func openLogFile(logfile string) (*os.File, error) {
 }
 
 // isReady indicates if logging (writting to endpoints) has started
-func (no *notifier) isReady() bool {
+func (no *Notifier) isReady() bool {
 	no.ops.RLock()
 	defer no.ops.RUnlock()
 	return no.ops.running
@@ -84,7 +80,7 @@ func (no *notifier) isReady() bool {
 
 // noteToSelf creates a note. This function is used to communicate internal problems.
 // This note will be logged
-func (no *notifier) noteToSelf(value interface{}) error {
+func (no *Notifier) noteToSelf(value interface{}) error {
 
 	resp := send("notifier", value, nil, no.noteChan, no.async, &no.ops)
 
@@ -101,13 +97,13 @@ func (no *notifier) noteToSelf(value interface{}) error {
 }
 
 // id returns notifier's details
-func (no *notifier) id() string {
+func (no *Notifier) id() string {
 	return fmt.Sprintf("Notifier[%s][%s] %p", no.service, no.instance, no)
 }
 
 // isOK check is some assumptions made by the notifier are still valid
 // notify.notifier expects some notification codes to be available at all times.
-func (no *notifier) isOK() {
+func (no *Notifier) isOK() {
 
 	// Check codes
 	sysCodes := []int{0, 1, 999}
@@ -249,7 +245,7 @@ func (l *logEntry) toJson() string {
 //  e.g.:
 // 1481552048\tbeacon\tbeacon_server_01\tcollector]\tMSG\t0\tGeneralMessage\tPushing a new Job into the jobChan
 // 1481552049\tbeacon\tbeacon_server_01\tdispatcher]\tERR\t3\tSystemMalfunction\tCould not dispatch Job
-func (no *notifier) log(n *note) {
+func (no *Notifier) log(n *note) {
 
 	// Confirm the log has been processed
 	if n.Confirm != nil {

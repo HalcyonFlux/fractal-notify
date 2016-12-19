@@ -35,11 +35,17 @@ func TestNotify(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	// Define relevant endpoints
+	logfile1 := os.Getenv("HOME") + "/myservice/myservice_main.log"
+	logfile2 := os.Getenv("HOME") + "/myservice/myservice_support.log"
+
 	endpoints := []interface{}{
-		os.Getenv("HOME") + "/myservice/myservice_main.log",
-		os.Getenv("HOME") + "/myservice/myservice_support.log",
+		logfile1,
+		logfile2,
 		os.Stdout,
 	}
+
+	defer os.Remove(logfile1)
+	defer os.Remove(logfile2)
 
 	// Instantiate the notifier(s)
 	noPrime := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100, endpoints[0])
@@ -505,6 +511,58 @@ func TestEmptyNotifier(t *testing.T) {
 
 	if log.Code != 1 {
 		t.Error("Failed correcting non-existing code")
+	}
+
+}
+
+func TestWarmUp(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("", "", true, true, true, 100)
+
+	go notifier.Run()
+	notifier.WarmUp()
+
+	if !notifier.isReady() {
+		t.Error("Warmup failed waiting for the notifier to start")
+	}
+
+	notifier.Exit()
+}
+
+func TestTwoNotifiers(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	logfile := os.Getenv("HOME") + "/TestTwoNotifiers.log"
+	defer os.Remove(logfile)
+
+	notifier1 := NewNotifier("", "", true, true, true, 100, logfile, os.Stdout)
+	notifier2 := NewNotifier("", "", true, true, true, 100, logfile, os.Stdout) // logfile will not be used
+
+	n1Endpoints := len(notifier1.endpoints.endpointsPtr)
+	n2Endpoints := len(notifier2.endpoints.endpointsPtr)
+
+	if n1Endpoints != 2 || n2Endpoints == 2 {
+		t.Error("Failed to assign logfile for only one notifier " + strconv.Itoa(n1Endpoints) + " " + strconv.Itoa(n2Endpoints))
+	}
+
+}
+
+func expectNotifier(no *Notifier) error {
+	fail := no.Failure("test")
+	return fail(3, "Hello, World!")
+}
+
+func TestNotifierStruct(t *testing.T) {
+	old := ignoreStdOut(t)
+	defer func() { os.Stdout = old }()
+
+	notifier := NewNotifier("MyService", "MyServiceInstance", true, false, false, 100, os.Stdout)
+
+	if expectNotifier(notifier).Error()[0:13] != "Hello, World!" {
+		t.Error("Failed passing notifier as function argument")
 	}
 
 }

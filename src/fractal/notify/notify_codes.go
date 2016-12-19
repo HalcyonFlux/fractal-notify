@@ -69,5 +69,5 @@ var standardCodes = map[int][2]string{
 	508: [2]string{"ERR", "HTTP-StatusLoopDetected"},
 	510: [2]string{"ERR", "HTTP-StatusNotExtended"},
 	511: [2]string{"ERR", "HTTP-StatusNetworkAuthenticationRequired"},
-	999: [2]string{"ERR", "ShouldNeverHappen"}, // [Restricted]. Should be used to track "should-never-happen" cases
+	999: [2]string{"ERR", "UnintendedCase"}, // [Restricted]. Should be used to track "should-never-happen" cases
 }
