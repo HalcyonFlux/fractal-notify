@@ -253,6 +253,10 @@ func (no *Notifier) Exit() error {
 		<-confirm
 		close(confirm)
 		close(no.noteChan)
+	} else {
+		no.ops.Lock()
+		no.ops.halt = true
+		no.ops.Unlock()
 	}
 
 	// Close endpoints
